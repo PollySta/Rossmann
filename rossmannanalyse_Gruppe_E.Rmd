@@ -1,0 +1,923 @@
+---
+title: "Rossmann-Analyse"
+author: "Steve Helfert (547068), Vinieth Rajavelu (547384), Polina Staykova (560451)"
+date: "last revision `r format(Sys.Date(), format='%d %B %Y')`"
+output:
+  html_document: default
+  pdf_document: default
+geometry: left=3cm,right=3cm,top=2cm,bottom=2cm
+Quelle: FÃ¼r einige Vorgehensweisen haben wir uns an diesen beiden Scripten https://www.kaggle.com/thie1e/exploratory-analysis-rossmann
+  und https://www.kaggle.com/nakapoor/rossmman-analysis-using-ggplot/code orientiert.
+---
+
+## Beschreibung der Analyse
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1. Laden der Daten
+```{r}
+####################Libraries#######################
+library(ggplot2)
+library(corrplot)
+library(scatterplot3d)
+library(caret)
+library(ROCR)
+library(boot)
+library(e1071)
+library(MASS)
+library(tree)
+library(randomForest)
+library(gbm)
+library(devtools)
+# install_github("vqv/ggbiplot")
+library(ggbiplot)
+library(DAAG)
+#install.packages("dendextend")
+library(dendextend)
+####################Libraries#######################
+# Datenquellen
+test    <- read.csv("test.csv")               # historische Daten ohne Verkaufsdaten
+train   <- read.csv("train.csv")              # historische Daten mit Verkaufsdaten
+store   <- read.csv("store.csv")              # Ergänzende Informationen über die Filialen
+
+joinedData <- read.csv("traindata_joined_with_store_COMMA.csv") 
+# vereinigt Traindaten mit Storedaten für spätere Analyse
+```
+
+# 2. Deskiptive Anlayse
+##2.1 Was beschreiben die Daten ?
+### a) Daten aus der Quelle **test**
+
+* `Id` - Id repräsentiert eine Datenzeile im Testdatensatz
+* `Store` - eindeutige Id für jede Filiale
+* `DayOfWeek` - Wochennummer
+* `Date` - Kalenderdatum
+* `Open` - Indikator dafür, ob das Geschäft offen oder geschlossen ist 0 = geschlossen, 1 = geöffnet
+* `Promo` - gibt an ob eine Werbeaktion durchgefährt wird: 0 = keine Werbeaktion, 1 = Werbeaktion
+* `StateHoliday` - Indikator für staatlichen Feiertag a = Feiertag, b = Osterfeiertage, c = Weihnachtsfeiertage, 0 = Kein Feiertag
+* `SchoolHoliday` - Indikator, ob eine Filiale während der Ferienzeit betroffen war, 0 = keine Ferien, 1 = Ferien
+
+### b) Daten aus der Quelle **train** wird um folgende Spalten ergänzt:
+
+* `Sales` - Umsatz für einen bestimmten Tag (diese Kennzahl soll vorhergesagt werden) in EUR
+* `Customers` - Anzahl der Kunden an einem bestimmten Tag
+
+### c) Daten aus der Quelle **store**
+
+* `Store` - eindeutige Id für jede Filiale
+* `StoreType` - unterscheidet zwischen 4 Filialtypen: a, b, c, d
+* `Assortment` - beschreibt eine Sortimentstufe: a = Basis, b = Extra, c = Erweitert
+* `CompetitionDistance` - Entfernung zur nähesten Konkurenzfiliale in METERN
+* `CompetitionOpenSinceMonth` - gibt Monat an seit wann die Filiale des Mitbewerbers besteht
+* `CompetitionOpenSinceYear` - gibt Jahr an seit wann die Filiale des Mitbewerbers besteht
+* `Promo2` - Promo2 ist eine fortlaufende Werbeaktion in Filiale: 0 = nicht teilnehmend, 1 =     teilnehmend
+* `Promo2SinceWeek` - gibt die Woche an in der die Werbeaktion stattfand
+* `Promo2SinceYear` - gibt das Jahr an in der die Werbeaktion stattfand
+* `PromoInterval` - gibt Monate an, in denen eine Promoaktion gestartet wurde für jedes Jahr
+
+```{r}
+#Traindatenset
+dim(train)   # 1017209 Datensätze, 9 Spalten
+#names(train) # liefert Spaltennamen
+head(train)  # liefert Spaltennamen + erste 6 Zeilen
+#View(train)  # allgemeine Sicht
+summary(train) # Min, Max, Median, 1.Quantil, 3.Quantil, Mittelwert
+
+#Storedatenset
+dim(store)   
+#names(store) 
+head(store) 
+#View(store)  
+summary(store)
+
+```
+
+##2.2 Was sind die Datentypen und Wertebereiche ?
+
+Die Trainingsperiode reicht vom 01.01.2013 bis 31.07.2015. Der Testzeitraum beginnt am 01.08.2015 und endet am 17.09.2015, also ist die Aufgabe, 48 Tage vorherzusagen. 
+
+```{r}
+str(train)   # intere Struktur Datenobjekt (train)
+str(store)   # intere Struktur Datenobjekt (store)
+```
+
+```{r}
+table(train$Promo) / nrow(train)          # prozentualer zeitlicher Anteil Werbeaktion (train)
+table(test$Promo) / nrow(test)            # prozentualer zeitlicher Anteil Werbeaktion (test)
+
+table(train$StateHoliday) / nrow(train)   
+# prozentualer zeitlicher Anteil staatlicher Feiertage (train)
+table(test$StateHoliday) / nrow(test)     
+# kein b und c = kein Ostern und keine Weihnachtsfeiertage (test)
+
+table(train$SchoolHoliday) / nrow(train)  
+# prozentualer zeitlicher Anteil, ob Filialen während der Schulferien betroffen waren (train)
+table(test$SchoolHoliday) / nrow(test)    
+# prozentualer zeitlicher Anteil, ob Filialen während der Schulferien betroffen waren (test)
+
+```
+__Ergebnis:__ Rund 38% der Filialen aus dem Trainingsdatensatz haben an einer Promo teilgenommen. Im Testdatensatz spiegelt sich ein ähnliches Verhalten (rund 40%) wider. In dem Testdatensatz ist aufgrund des oben genannten verkürzten Beobachtungszeitraumes zu erkennen, dass es keine Oster- bzw. Weihnachtsferien gibt. Jedoch ist festzustellen, dass es einen ziemlich großen Teil der Zeit (44%) Schulferien gibt. In den Trainingsdaten machen Schulferien nur 18% der Daten aus.
+
+
+##2.3 Allgemeine Analyse
+### a) Datenverteilung und generelle Beziehungen
+```{r}
+#Verteilung Storetypen
+ggplot(store,aes(StoreType, fill = StoreType)) + geom_bar() + ggtitle("Verteilung von Storetypen - überwiegender Teil an Stores gehört dem Typ 'a' an")
+
+#Verteilung von Sortimentstufen
+ggplot(store,aes(Assortment, fill = Assortment)) + geom_bar(stat = "count") + ggtitle("Verteilung von Sortimentstufen (Assortment)")
+
+#Umsatzverteilung nach Sortimentstufe
+OpenUndSales <- joinedData[joinedData$Open != 0 & joinedData$Sales != 0,]
+ggplot(data = OpenUndSales, aes(factor(Assortment), Sales,fill = Assortment)) + geom_boxplot() + ggtitle("Umsatzverteilung nach Sortimentstufe")
+
+#Promotionverteilung nach Wochentag
+ggplot(data = OpenUndSales, aes(DayOfWeek,fill = factor(Promo))) + geom_bar() + ggtitle("Promotionsverteilung nach Wochentag = Keine Promo am WE")
+
+```
+
+```{r}
+
+#Storeverteilung nach mittlerem Umsatz 
+hist(aggregate(train$Sales, 
+               by = list(train$Store), mean)$x, 100, 
+     main = "Storeverteilung nach mittlerem Umsatz ")
+
+#Storeverteilung nach mittlerer Kundenanzahl 
+hist(aggregate(train$Customers, 
+               by = list(train$Store), mean)$x, 100, 
+     main = "Storeverteilung nach mittlerer Kundenanzahl ")
+
+```
+
+__Ergebnis:__ Auf dem ersten Blick weisen die Histographen bezogen auf Umsatz und Kundenanzahl ein ähnliches Verhalten auf. Das bedeutet, dass sie in Abhängigkeit stehen.
+
+```{r}
+#sales mit Betrachtung Schoolholiday
+#install.packages("ggplot2")
+library(ggplot2)
+ggplot(train, aes(x = factor(train$SchoolHoliday), y = train$Sales)) +
+    geom_jitter(alpha = 0.1) +
+    geom_boxplot(color = "yellow", outlier.colour = NA, fill = NA) + ggtitle("Umsatzverteilung nach Ferien (Schoolholiday)")
+```
+
+__Ergebnis:__ Der Graph mit der Aufteilung in Schoolholiday zeigt deutlich auf, dass der Umsatz nicht hierdurch beeinflusst wird.
+
+```{r}
+#sales mit Betrachtung dayofweek (inklusive Stores mit 0 Euro Umsatz)
+library("ggplot2")
+ggplot(train,
+       aes(x = factor(DayOfWeek), y = Sales)) + 
+    geom_jitter(alpha = 0.1) + 
+    geom_boxplot(color = "yellow", outlier.colour = NA, fill = NA)+ ggtitle("Umsatzverteilung mit Betrachtung des Wochentags (dayofweek)")
+
+#sales mit Betrachtung dayofweek (exklusive Stores mit 0 Euro Umsatz)
+ggplot(train[train$Sales != "0",],
+       aes(x = factor(DayOfWeek), y = Sales)) + 
+    geom_jitter(alpha = 0.1) + 
+    geom_boxplot(color = "yellow", outlier.colour = NA, fill = NA)+ ggtitle("Umsatzverteilung mit Betrachtung des Wochentags ohne 0€ Umsatz")
+```
+
+__Ergebnis:__ Der Vergleich des Umsatzes anhand von DayOfWeek zeigt signifikant auf, dass die durchschnittlichen Verkaufszahlen am Sonntag höher sind.
+Schaut man sich die Quantile der einzelnen Wochentage an, stechen hier Montag und Sonntag besonders hervor. Nimmt man die Umsatztage mit 0 Verkäufen raus, ist diese enorme Streuung/Variablität besonders ersichtlich.
+
+
+
+### b) Auswirkung einer Promo auf Kundenanzahl und Umsatz für kompletten Zeitraum im Trainingsdatensatz
+
+```{r}
+# Daten  0 = keine Werbeaktion, 1 = Werbeaktion
+promo_df_nein <- train[train$Promo == 0,]
+promo_df_ja <- train[train$Promo == 1,]
+
+# Boxplot customers
+boxplot(promo_df_nein$Customers, promo_df_ja$Customers, names = c("ohne Werbeaktion", "mit Werbeaktion"), col = "red",main="Kundenanzahl", xlab="Promo", ylab="Kundenanzahl")
+
+# Boxplot sales
+boxplot(promo_df_nein$Sales, promo_df_ja$Sales, names = c("ohne Werbeaktion", "mit Werbeaktion"), col = "grey",main="Umsatz", xlab="Promo", ylab="Umsatz in EUR")
+
+
+
+
+
+```
+
+__Ergebnis:__ Der Umsatz ist wie erwartet stark mit der Anzahl der Kunden korreliert. Der Boxplot (Kundenanzahl) lässt sich weniger von einer Promo beeinflussen im Vergleich mit dem Boxplot (Umsatz).
+Dies würde bedeuten, dass die Promos nicht hauptsächlich mehr Kunden anziehen, aber lassen die Kunden mehr ausgeben. 
+
+
+### c) Auswirkung von dauerhaften Promoaktionen (Promo2) auf die Kundenanzahl und Umsatz für kompletten Zeitraum im Trainingsdatensatz
+```{r}
+
+# Daten  0 = keine dauerhafte Werbeaktion, 1 = dauerhafte Werbeaktion
+promo2_df_nein <- joinedData[joinedData$Promo2 == 0,]
+promo2_df_ja <- joinedData[joinedData$Promo2 == 1,]
+
+# Boxplot customers
+boxplot(promo2_df_nein$Customers, promo2_df_ja$Customers, names = c("ohne dauerhafte Werbeaktion", "mit dauerhaften Werbeaktion"), col = "red",main="Kundenanzahl", xlab="Promo", ylab="Kundenanzahl")
+
+# Boxplot sales
+boxplot(promo2_df_nein$Sales, promo2_df_ja$Sales, names = c("ohne dauerhafte Werbeaktion", "mit dauerhaften Werbeaktion"), col = "grey",main="Umsatz", xlab="Promo", ylab="Umsatz in EUR")
+
+```
+__Bemerkung:__ Die verschiedenen Promoaktionen können nicht ganzheitlich verglichen werden, da der genaue Aktionzeitraum für Promo2 nicht zur Verfügung steht. Deswegen ist ein Vergleich auf Tagesebene nicht möglich.
+
+### d) Auswirkung einer Promo auf Kundenanzahl und Umsatz im Zeitraum des Testdatensatzes im Trainingsdatensatz 01.08 - 17.09 in den Jahren 2013 und 2014
+
+```{r}
+#################
+
+# Kunden- und Umsatzverhalten mit und ohne Werbeaktion im Untersuchungszeitraum für 2013 und 2014
+
+################
+train$Date <- as.character(train$Date)
+
+zeitraum_2014 <- train[train$Date>="2014-08-01" & train$Date<="2014-09-17", ]
+
+promo_nein_zeitraum_2014 <- zeitraum_2014[zeitraum_2014$Promo == 0,]
+promo_ja_zeitraum_2014 <- zeitraum_2014[zeitraum_2014$Promo == 1,]
+
+# Boxplot customers 2014
+boxplot(promo_nein_zeitraum_2014$Customers, promo_ja_zeitraum_2014$Customers, names = c("ohne Werbeaktion", "mit Werbeaktion"), col = "red",main="Kundenanzahl 01.08.2014-17.09.2014", xlab="Promo", ylab="Kundenanzahl")
+
+# Boxplot sales 2014
+boxplot(promo_nein_zeitraum_2014$Sales, promo_ja_zeitraum_2014$Sales, names = c("ohne Werbeaktion", "mit Werbeaktion"), col = "grey",main="Umsatz 01.08.2014-17.09.2014", xlab="Promo", ylab="Umsatz in Euro")
+
+
+zeitraum_2013 <- train[train$Date>="2013-08-01" & train$Date<="2013-09-17", ]
+
+promo_nein_zeitraum_2013 <- zeitraum_2013[zeitraum_2013$Promo == 0,]
+promo_ja_zeitraum_2013 <- zeitraum_2013[zeitraum_2013$Promo == 1,]
+# Boxplot customers 2013
+boxplot(promo_nein_zeitraum_2013$Customers, promo_ja_zeitraum_2013$Customers, names = c("ohne Werbeaktion", "mit Werbeaktion"), col = "red",main="Kundenanzahl 01.08.2013-17.09.2013", xlab="Promo", ylab="Kundenanzahl")
+# Boxplot sales 2013
+boxplot(promo_nein_zeitraum_2013$Sales, promo_ja_zeitraum_2013$Sales, names = c("ohne Werbeaktion", "mit Werbeaktion"), col = "grey",main="Umsatz 01.08.2013-17.09.2013", xlab="Promo", ylab="Umsatz in Euro")
+
+
+```
+__Ergebnis:__ Für die zu prognostizierenden Monate gab es in den vergangenen Jahren bei gleichbleibenden Aktionen keine gravierende Unterschiede, also ist mit einem ähnlichen Umsatz und Kundenverhalten zu rechnen.
+
+### e) Visualisierung Kaufverhalten über kompletten Zeitraum im Train-Datensatz
+```{r}
+# keine Promo = 0
+# Promo       = 1
+
+library(ggplot2)
+sp <- ggplot(train, aes(x = train$Sales, y = train$Customers)) + geom_point(shape=1)
+sp + facet_grid(. ~ train$Promo, labeller = label_both) + ggtitle("Auswirkung von Promo-Aktionen auf Kunden und Umsatz über alle Filialen") + xlab("Umsatz in EUR") + ylab("Kundenanzahl")
+ 
+```
+__Ergebnis:__ Dieser Plot festigt die bisherigen Aussagen über den kompletten Zeitraum. Promoaktionen bezüglich des Kaufverhaltens der Kunden haben keinen großen Einfluss auf Sales. Durch Promos werden die Kunden vereinzelt dazu veranlasst mehr auszugeben, aber Promoaktion führen nicht automatisch zu mehr Kunden.
+
+##2.4 Gibt es Korrelationen
+### a) Welche Faktoren beeinflussen sich gegenseitig
+
+Im nächsten Schritt wird die Correlations-Matrix angewendet.
+```{r}
+# Entfernen von nicht-nummerischen unrelevanten Spalten (Date, StateHoliday, Storetype, Assortment, Promointervall...) für Correlation-Matrix
+train2 <- joinedData[, -c(2,3,8,10,11,12,13,14,15,16,17,18,19)]
+train_cor <- cor(train2)
+train_cor[upper.tri(train_cor, diag = FALSE)] <- NA
+train_cor
+
+library(corrplot)
+corrplot(train_cor,method = "number")
+```
+
+Folgende Merkmale haben größeren Einfluss auf das Merkmal __Sales__ : Customers, Open, Promo. Der Correlationskoeffizient 0.89 bei Sales-Customer bedeutet, je größer die Anzahl der Kunden, desto höher der Umsatz.
+
+#3. Regression
+##3.1 Definition geeigneter Merkmale und Bildung von Regressionsmodellen
+
+Bildung eines einfachen/multiplen linearen Regressionsmodells `sales_lm` mit `sales` (*Umsatz*) als Zielvariable  und weiteren Einflussmerkmalen als Input. 
+
+```{r}
+# liniares multiples Regressionsmodell für alle Variablen --> Backward Selection
+sales_lm1 <-lm(joinedData$Sales ~ . -Date , data = joinedData)
+summary(sales_lm1)
+
+# perfektes Modell im Hinblick auf Komplexität sales --> Store, Customers, DayOfWeek, Open, Promo
+sales_lm2 <-lm(joinedData$Sales ~ .  -Date  -StateHoliday	-SchoolHoliday	-StoreType	-Assortment	-CompetitionDistance	-CompetitionOpenSinceMonth	-CompetitionOpenSinceYear	-Promo2	-Promo2SinceWeek	-Promo2SinceYear	-PromoInterval	-StoreCheck
+, data = joinedData)
+summary(sales_lm2)
+
+# einfaches lineares Modell sales --> customer
+sales_lm3 <-lm(joinedData$Sales ~ .  -Date -Store -DayOfWeek -Promo -Open -StateHoliday	-SchoolHoliday	-StoreType	-Assortment	-CompetitionDistance	-CompetitionOpenSinceMonth	-CompetitionOpenSinceYear	-Promo2	-Promo2SinceWeek	-Promo2SinceYear	-PromoInterval	-StoreCheck
+, data = joinedData)
+summary(sales_lm3)
+
+# lineares Modell auf Basis vom Entscheidungsbaum und Regressionsbaum (siehe Punkt 9) Sales --> Customers, Promo, StoreType
+# Entscheidungsbaum, Regressionsbaum folgt weiter unten
+sales_lm4 <-lm(joinedData$Sales ~ .  -Date -Store -DayOfWeek -Open  -StateHoliday	-SchoolHoliday	-Assortment	-CompetitionDistance	-CompetitionOpenSinceMonth	-CompetitionOpenSinceYear	-Promo2	-Promo2SinceWeek	-Promo2SinceYear	-PromoInterval	-StoreCheck
+, data = joinedData)
+summary(sales_lm4)
+
+# Vergleich der Modelle
+anova(sales_lm1, sales_lm2,sales_lm3,sales_lm4)
+```
+__Ergebnis:__ Bei der Verwendung des Verfahrens Backward Selektion, ist ersichtlich, dass dieses Model (sales_lm1) mit allen Variablen hinsichtlich der Beschreibung der Varianz und dem geringsten RSE am besten ist. Da das Ziel jedoch ist, die Anzahl der verwendeten Einflussvariablen gering zu halten und die damit verbundene Komplexität, wird das zweite Model (sales_lm2) als besser begutachtet. Dieses deckt sich mit dem Ergebnis der Korrelationsmatrix.
+Wir haben uns gegen die Nutzung der Forward-Selektion entschieden, da nicht alle Kombinationen validiert werden können.
+Das Modell "sales_lm4" wurde nach der Erstellung des Regressionsbaum/Klassifikationsbaum (siehe Punkt 9) erstellt und erweist sich als das beste Modell im ANOVA-Vergleich und in der Zusammenfassung.
+Die Wahrscheinlichkeit (p-Werte), die t-Werte unter der Nullhypothese zu sehen, sind sehr klein. Daher wird die Nullhypothese in allen sales-Modellen für alle Koeffizienten zurückgewiesen, d.h. die Koeffizienten unterscheiden sich signifikant von Null.
+
+##3.2 Visualisierung von verschiedenen Regressionsmodellen auf allen Stores und weitere deskriptive Analyse
+```{r}
+#Basis Plot Kunden --> Umsatz farbig unterschieden nach Assortment
+p1 <- ggplot(joinedData, aes(x = Customers, y = Sales))
+p4 <- p1 + geom_point(aes(color=factor(joinedData$Assortment))) +
+  geom_smooth(aes(color=factor(joinedData$Assortment)),method = "lm", se = TRUE) +
+  scale_color_manual(name ="Assortment", 
+                     labels=c("a = Basis","b = Extra", "c = Erweitert"),
+                     values=c("red","green", "blue")) +
+  scale_shape_manual(name ="Assortment", 
+                     labels=c("a = Basis","b = Extra", "c = Erweitert"),
+                     values=c(0,0,2)) +
+  
+  labs(x="Kundenanzahl", 
+       y = "Umsatz in EURO", 
+       title= "Lineare Regression (95% CI) von Umsatz vs Kundenanzahl by Assortment")
+p4
+
+#Basis Plot Kunden --> Umsatz farbig unterschieden nach Storetype
+p2 <- ggplot(joinedData, aes(x = Customers, y = Sales))
+p5 <- p2 + geom_point(aes(color=factor(joinedData$StoreType))) +
+  geom_smooth(aes(color=factor(joinedData$StoreType)),method = "lm", se = TRUE) +
+  scale_color_manual(name ="StoreType", 
+                     labels=c("a","b", "c","d"),
+                     values=c("red","green", "blue", "yellow")) +
+  scale_shape_manual(name ="StoreType", 
+                     labels=c("a","b", "c", "d"),
+                     values=c(0,0,0,2)) +
+  
+  labs(x="Kundenanzahl", 
+       y = "Umsatz in EURO", 
+       title= "Lineare Regression (95% CI) von Umsatz vs Kundenanzahl by StoreType")
+p5
+
+#Übersicht Anzahl verschiedener Assortment
+data.frame(table(store$Assortment))
+
+#Übersicht Anzahl verschiedener Storetypen
+data.frame(table(store$StoreType))
+
+#Übersicht Storetype/Assortment Kombination
+table(data.frame(Assortment = store$Assortment, StoreType = store$StoreType))
+
+store_df_a <- joinedData[joinedData$StoreType == "a",]
+store_df_a_mean <- mean(store_df_a$Sales)
+
+store_df_b <- joinedData[joinedData$StoreType == "b",]
+store_df_b_mean <- mean(store_df_b$Sales)
+
+store_df_c <- joinedData[joinedData$StoreType == "c",]
+store_df_c_mean <- mean(store_df_c$Sales)
+
+store_df_d <- joinedData[joinedData$StoreType == "d",]
+store_df_d_mean <- mean(store_df_d$Sales)
+
+#gemittelte Umsätze nach Storetypen mit graphischer Visualisierung
+umsatz_mean_storetypes <- c(store_df_a_mean,store_df_b_mean,store_df_c_mean, store_df_d_mean)
+umsatz_mean_storetypes
+
+#Durchschnittlicher Umsatz nach Storetype
+barplot(umsatz_mean_storetypes, main="Durchschnittlicher Umsatz nach Storetype", xlab = "Storetype", ylab = "Umsatz", col = c("darkblue", "yellow", "red", "green"), names.arg = c("a","b","c","d"))
+
+
+
+```
+__Ergebnis:__ Auf Grundlage von Storetype und Assortment wurden verschiedene Regressionsmodelle in den Plot "Lineare Regression (95% CI) von Umsatz vs Kundenanzahl by Assortment/StoreType" ergänzt. Anhand der Verteilung der verschiedenen Datenpunkte (Stores) ist ersichtlich, dass unterschiedliche lineare Modelle bezogen auf Storetype und Assortment sinnvoll sind. Storetype d hat die wenigsten Kunden, diese generieren aber am meisten Umsatz im Verhältnis. Storetype d bietet nur Sortiementstufen (a,c) Basis und Erweitert an. Auffällig ist, dass es im Verhältnis sehr wenige Assortment b und Storetyps b gibt. Mutmaßlich würde man davon ausgehen von Storetype b auf d zu wechseln, um mehr Umsatz zu generieren. Aber guckt man sich die Umsätze gruppiert nach Storetypen an (letzter Plot), macht b am meisten Umsatz.
+
+##3.3 Visualisierung von verschiedenen Regressionsmodellen auf spezifischen Store
+```{r}
+#Eigenschaften Store 1000: Storetyp = a, Assortment = c
+#subset für store 1000 für kompletten Zeitraum
+store_df_1000 <- joinedData[joinedData$Store == "1000",]
+#Spalten Sales, Customer auswählen
+store_df_1000 <- store_df_1000[4:5]
+summary(store_df_1000)
+#View(store_df_1000)
+
+#linerares Modell für Sales --> Customer auf Basis des oben entwickelten Modells 'sales_lm3'
+lm_sales_store1000 <-lm(Sales ~ Customers, data = store_df_1000)
+
+#Vorhersage für Kundenanzahl von 300 - 800
+predict(lm_sales_store1000, newdata = data.frame(Customers = c(300,500,800)))
+
+library(ggplot2)
+ggplot(lm_sales_store1000, aes(x=Customers, y=Sales)) + geom_point(shape=1) +
+    geom_smooth(method=lm,   # Regressionslinie hinzufügen
+                level = 0.95,    # Konfidenzintervall hinzufügen
+                fullrange=TRUE)+ ggtitle("Lineares Regressionsmodell Store 1000 (CI 95%)")
+
+#Perfektes Modell --> Spalten Sales, Customer, Open, Promo auswählen (Bais: Modell 'sales_lm2')
+store_df_1000 <- joinedData[joinedData$Store == "1000",]
+store_df_1000_erweitert<- store_df_1000[4:7]
+#summary(store_df_1000_erweitert)
+#View(store_df_1000_erweitert)
+#linerares Modell für Store 1000 für Customer, Promo --> Sales
+lm_sales_store1000_erweitert <-lm(Sales ~ Customers + Promo, data = store_df_1000_erweitert)
+summary(lm_sales_store1000_erweitert)
+#Vorhersage des Umsatzes für Kundenanzahl von 300 - 800 ohne Promo
+predict(lm_sales_store1000_erweitert, newdata = data.frame(Customers = c(300,500,800),Promo = c(0,0,0)))
+#Vorhersage des Umsatzes für Kundenanzahl von 300 - 800 mit Promo
+predict(lm_sales_store1000_erweitert, newdata = data.frame(Customers = c(300,500,800),Promo = c(1,1,1)))
+
+# 3D scatterplot der Daten von Store 1000
+library(scatterplot3d)
+scatterplot3d(x=store_df_1000_erweitert$Customers, y=store_df_1000_erweitert$Promo, z=store_df_1000_erweitert$Sales, highlight.3d=TRUE, pch=16, main = "3D Scatterplott für Store 1000 ohne Regressionsfläche")
+
+# hinzufügen einer regressionsfläche
+s3d <- scatterplot3d(x=store_df_1000_erweitert$Customers, y=store_df_1000_erweitert$Promo, z=store_df_1000_erweitert$Sales, highlight.3d=TRUE, pch=16, type = "h", main = "3D Regressionsfläche für Store 1000", xlab = "Customers", ylab =" Promo", zlab = "Sales" )
+s3d$plane3d(lm_sales_store1000_erweitert, lty="solid")  # Regressionsfläche vom linearen Model "lm_sales_store1000_erweitert""  
+observed.3d <- s3d$xyz.convert(store_df_1000_erweitert$Customers, store_df_1000_erweitert$Promo, store_df_1000_erweitert$Sales)  # Datenpunkte
+predicted.3d <- s3d$xyz.convert(store_df_1000_erweitert$Customers, store_df_1000_erweitert$Sales, fitted(lm_sales_store1000_erweitert)) # Treffer der Regressionsfläche anzeigen
+
+```
+__Ergebnis:__ Der erste Plot visualisiert das einfache Model mit Customer als Eingangsvariable und Sales als Zielvariable für Store 1000. Der zweite Plot stellt die Datenpunkte in einer Ebene dar, inklusive farblicher Aufteilung bezogen auf Promo. Der dritte Plot stellt die drei Variablen Sales, Customer und Promo im Verhältnis zur Regressionsfläche dar. Schaut man sich die predicted values an, so wird bei 'lm_sales_store1000_erweitert' deutlich, dass bei durchgeführten Promos mehr Umsatz generiert werden kann.
+
+## 3.4 Kreuzvalidierung für lineares Regressionsmodell
+```{r}
+# 10-fache Kreuzvalidierung auf subset für store 1000 für kompletten Zeitraum (Spalten Sales, Customer, Open, Promo)
+cv_lm <- cv.lm(store_df_1000_erweitert, form.lm = lm_sales_store1000_erweitert, m=10, dots = 
+      FALSE, seed=29, plotit=TRUE, printit=TRUE)
+attr(cv_lm, 'ms')
+
+```
+__Ergebnis:__
+Um zu testen, ob das erzeugte Modell die ganze Zeit über gut funktioniert, wurde die Kreuzvalidierung angewendet. Durch die Kreuzvalidierung wird die Modellqualität überprüft. 
+Aus den Berechnungen der mittleren quadratischen Fehler der Vorhersagen wird der Durchschnitt dieser quadratischen mittleren Fehler (k-Abschnitte) berechnet -> hier ist es ms 196583. Sinngemäß sollte dieses Vorgehen für alle weiteren Modelle angewendet werden, um einen Modellvergleich durchzuführen. Aufgrund des erhöhten Outputs wurde dies nicht gemacht.
+
+
+# 4. Benchmarking - Mittelwert für Store '1000' im Testzeitraum vs lineares Modell
+```{r}
+# Dataframe für Store 1000 erstellen
+store_df_1000 <- train[train$Store == "1000",]
+# View(store_df_1000)
+store_df_1000$Date <- as.character(store_df_1000$Date)
+
+# Datensatz filtern auf den Zeitraum 6 Wochen zurück und Wochentag 'Freitag'
+zeitraum_6WochenZurueck <- store_df_1000[store_df_1000$Date>="2015-06-26" & store_df_1000$Date<="2015-07-31" & store_df_1000$DayOfWeek == "5",]
+# View(zeitraum_6WochenZurueck)
+mittelwertZeitraum_6WochenZurueck <- mean(zeitraum_6WochenZurueck$Sales)
+mittelwertZeitraum_6WochenZurueck
+
+#### Benchmarkvergleich mit erarbeitetem Regressionsmodell
+
+lm_sales_store1000_erweitert2 <-lm(Sales ~ Customers + DayOfWeek , data = store_df_1000)
+# Mittelwertbestimmung Kunden
+mittelwertKundenanzahl6Wochenzurueck <- mean(zeitraum_6WochenZurueck$Customers)
+# mittelwertKundenanzahl6Wochenzurueck
+
+# Mittelwertbestimmung für das predicted modell
+mean(predict(lm_sales_store1000_erweitert2, newdata = data.frame(Customers = mittelwertKundenanzahl6Wochenzurueck, DayOfWeek = 5, Promo = 1, Promo = 0)))
+
+
+```
+__Ergebnis:__ In der Analyse wurden die Verkaufszahlen der Filiale 1000 als Mittelwert der letzten 6 Wochen für den selben Wochentag (hier: Freitag) ermittelt. Der durchschnittliche Umsatz der letzten Wochen wird verglichen mit unseren bisherigen Modellen. Es ist ersichtlich, dass es keine gravierenden Unterschiede gibt, folglich ist die Modellerstellung für präzise Resultate lohnenswert. 
+
+# 5. Klassifikation
+## 5.1 Bildung eines logistischen Regressionsmodells auf sample Datensatz
+```{r}
+#logistisches Modell --> Promo
+
+set.seed(1)
+train_sample_1000 <- joinedData[sample(1:dim(joinedData)[1],1000),]
+
+#train_sample <- createDataPartition(train_sample_1000$Promo, p =0.5, list = FALSE)    # stratified sample ergänzen
+#train_sample
+
+fit <- glm(Promo ~ Sales, data = train_sample_1000, family = binomial)
+#plot(fit)
+
+# Klassen-Wahrscheinlichkeiten
+props <- predict(fit, type="response")
+
+# Klassifizieren mittels Schwellenwert
+classify <- function(x, threshold) {
+  ifelse(x > threshold, 1, 0)
+}
+actuals <- ifelse(train_sample_1000$Promo == 1, 1, 0)
+
+threshold_05 <- 0.5
+predicted <- classify(props,threshold_05)
+# Definition von Promo = "1"als positive Klasse als Kennzahl
+library(caret)
+confusionMatrix(predicted, actuals, positive = "1")
+```
+
+### a) Festlegen und Änderung des Schwellenwertes für Konfusionsmatrix
+```{r}
+threshold_03 <- 0.3
+predicted <- classify(props,threshold_03)
+confusionMatrix(predicted, actuals, positive = "1")
+threshold_08 <- 0.8
+predicted <- classify(props,threshold_08)
+confusionMatrix(predicted, actuals, positive = "1")
+```
+
+### b) Bilden einer ROC-Kurve  
+```{r}
+#ziel --> um AUC zu berechnen, bestes Modell und bester Schwellenwert
+library(ROCR)
+ROCRpred <- prediction(props, actuals)
+
+ROCRperf <- performance(ROCRpred, 'tpr','fpr')
+plot(ROCRperf, colorize = TRUE, text.adj = c(-0.2,1.7), main = "ROC-Kurve")
+abline(0,1)
+# Ermittlung des AUC-Wertes für Modellqualität
+performance(ROCRpred, "auc")@y.values
+```
+
+### c) Schwellenwertbestimmung und Kostenanalyse
+```{r}
+# Zuweisen von Kosten für kostenbewusste Entscheidungen
+model_cost <- function(cost_matrix, confusion_matrix) {
+  sum(cost_matrix * confusion_matrix)}
+threshold_vektor <- seq(0.1, 0.9, 0.1)
+
+# Kosten definieren:
+# False Positives: Keine Promo stattgefunden, aber Promo vorhergesagt -> Kosten von 300 -> Umsatzverlust
+# False Negatives: Promo stattgefunden, jedoch nicht vorhergesagt -> Kosten von 200 -> Kosten für Promo
+costs <- matrix(c(0, 200, 300, 0), nrow = 2)
+
+# Gegenüberstellung Schwellenwert und Kosten
+cost_by_threshold <- data.frame(threshold=threshold_vektor, 
+                                costs=vector(length = length(threshold_vektor)))
+for (i in (1:length(threshold_vektor))) {
+  predicted <- classify(props,threshold_vektor[i])
+  conf_matrix <- confusionMatrix(predicted, actuals, positive = "1")
+  cost_by_threshold$costs[i] <- model_cost(costs, conf_matrix$table)}
+
+cost_by_threshold
+
+# Ermittlung bester Schwellenwert/ geringste Kosten
+best_index <- which.min(cost_by_threshold$costs)
+best_index
+best_threshold <- cost_by_threshold$threshold[best_index]
+best_threshold
+best_costs <- cost_by_threshold$costs[best_index]
+best_costs
+
+```
+
+__Ergebnis:__ In diesem Abschnitt wird untersucht mit welcher Wahrscheinlichkeit das Eintreten von Promo von Sales abhängt. Ausgangspunkt ist ein sample von 1000 Datensätzen aus joinedData. Aus diesem wird das logistische Regressionsmodell erstellt.
+Verschiedene Schwellenwerte werden für die Erstellung der Konfusionmatix betrachtet. Aus der ROC-Kurve ist ersichtlich, das der Schwellenwert zwischen 0.3 und 0.4 am geeignetesten ist. Zudem können wir aus der Konfusionsmatrix erkennen, dass die Verteilung von TPR und FNR in diesem Bereich am besten ist. Des weiteren wurde eine Kostenfunktion erstellt mit fiktiven Kosten und den Schwellenwerten gegenübergestellt. Die Güte des logistischen Modells beträgt nach Berechnung ca 81 %.
+
+## 5.2 Bildung eines logistischen Regressionsmodells auf stratifizierten Datensatz
+```{r}
+
+# Bildung von stratifizierten Datensatz mit p = 0.001 -> gleiche Verteiltung bezüglich Promo
+strat_trainedData_1018 <- joinedData[createDataPartition(joinedData$Promo , p = 0.001, list = FALSE),]
+strat_trainedData_1000 <- strat_trainedData_1018[sample(1:dim(strat_trainedData_1018)[1],1000),]
+
+n2 <- nrow(strat_trainedData_1000)
+n2
+actuals2 <- ifelse(strat_trainedData_1000$Promo == 1, 1, 0)
+
+# stratifiziertes sampling
+stratified_sample <- sample(1:n2, n2 * 0.8, replace = FALSE)
+#nrow(stratified_sample)
+train_indices<- createDataPartition(joinedData$Promo, p = 0.001, list = FALSE)
+
+# Modell erstellen mit Trainingsdaten
+fit2 <- glm(Promo ~ Sales, data = strat_trainedData_1000, family = binomial, subset = stratified_sample)
+
+props <- predict(fit2, newdata = strat_trainedData_1000[-train_indices,], type="response")
+
+threshold <- 0.3 # Schwellenwert von oben
+
+# klassifizieren nach Schwellenwert
+predicted <- classify(props,threshold)
+
+# die Klasse "1" spezifizieren als positive Klasse für performance Kennzahlen
+confusionMatrix(predicted, actuals2[-train_indices], positive = "1")
+
+```
+
+__Ergebnis:__ An dieser Stelle ziehen wir 0.001 Prozent stratifizierte Datensätze, die das Verhältis im Bezug zum kompletten Datensatz widerspiegeln. Dieses Modell sollte bessere Werte liefern als das sample-Modell, wird jedoch nur durch den Sensitivity-Wert ersichtlich.
+
+
+## 5.3 Kreuzvalidierung für erzeugte logistische Regressionsmodelle (sample/stratifiziert)
+```{r}
+# 10-fache Kreuzvalidierung auf sample
+cv_glm <- cv.glm(train_sample_1000, fit, K=10)
+# gemittelte Missklassifikationsrate
+cv_glm$delta
+
+# 10-fache Kreuzvalidierung auf stratifizierten Datensatz
+strat_trainedData_1000_ohne_NA <- na.omit(strat_trainedData_1000)# NA entfernen
+#nrow(strat_trainedData_1000_ohne_NA)
+cv_gl <- cv.glm(strat_trainedData_1000_ohne_NA, fit2, K=10)
+# gemittelte Missklassifikationsrate
+cv_gl$delta
+
+
+
+```
+__Ergebnis:__
+Durch die Anwendung einer Kreuzvalidierung wird die Modellqualität überprüft. Wie bereits oben ersichtlich ist das stratifizierte Modell ungenauer. Dieses wird auch durch den ersten Wert(roher Durchschnitt der Fehlklassifizierungsrate) deutlich. Erwartungsmäß sollte durch den Einsatz eines statifizierten Modells eine bessere Modellgüte erzielt werden.
+
+
+# 6. K-nearest neighbour für Klassenzuordnung
+## 6.1 K-nearest neighbour - (Predictors: Sales, Customer) -->  (Class: Assortment)
+```{r}
+#k-nearest neighbour mit Eingangsparametern Sales und Customer und Ausgangsparameter Assortment
+zeitraum_2014_1_tag <- joinedData[joinedData$Date=="01.08.2014" , ]
+stratified_join<- zeitraum_2014_1_tag[createDataPartition(zeitraum_2014_1_tag$Assortment, p = 0.1, list = FALSE),]
+
+n <- nrow(stratified_join) #Anzahl Datensätze
+#View(train_sample_1000)
+
+#Aufteilung in Trainings- und Testdatensatz
+train_indices <- sample(1:n, round(2/3 * n))
+train_sample_1000_train <- stratified_join[train_indices,]
+train_sample_1000_test <- stratified_join[-train_indices,]
+
+# auf zwei Eingabe-Features trainieren
+# zwei features ausgewählt, sodass lineare Trennung gut funktioniert
+features <- c("Sales", "Customers")
+cols <- c(features, "Assortment")
+
+# 10 fache Kreuzvalidierung
+ctrl <- trainControl(method="cv", number = 5) 
+
+# hier werden verschiedene K-Werte ausprobiert
+knnfit <- train(Assortment ~ ., data = stratified_join[, cols], method = "knn", trControl = ctrl, 
+                preProcess = c("center","scale"), 
+                tuneGrid = expand.grid(k=3:20)) # try k=3,4, ... 20
+
+#Ergebnis von kNN fit
+knnfit
+plot(knnfit, main=" Genauigkeit bei verschiedenen K's")
+
+# Klassenvorhersage
+knnPredict <- predict(knnfit, newdata = stratified_join[, cols] )
+
+# Konfusionsmatrix und Genauigkeit
+confusionMatrix(knnPredict, stratified_join$Assortment)
+# Visualisierung Farbe mit Originalklasse und Symbol mit vorhergesagter Klasse
+plot(stratified_join[,features], col=stratified_join$Assortment, pch=as.numeric(unclass(knnPredict)), main=" Visualisierung Farbe mit Originalklasse und Symbol mit vorhergesagter Klasse")
+```
+__Ergebnis:__ Mittels des k-Nearest-Neighbour classifiers wurde versucht das beste k für die höchste Genauigkeit (Vorhersage) von Assortment mit den Eingangparametern Sales und Customers zu bestimmen. Der finale k-Wert für das eingesetzte Modell ist der Konsolenausgabe zu entnehmen, da es sich jeweils um eine andere stratifizierte Datenbasis handelt.
+
+## 6.2 K-nearest neighbour - (Predictors: Sales, CompetitionDistance) -->  (Class: Storetype)
+```{r}
+# auf zwei Eingabe-Features trainieren
+# zwei features ausgewählt, sodass lineare Trennung gut funktioniert
+features2 <- c("Sales", "CompetitionDistance")
+cols2 <- c(features, "StoreType")
+
+ctrl <- trainControl(method="cv", number = 5) # 5-fold cross validation 
+
+# hier werden verschiedene K-Werte ausprobiert
+knnfit <- train(StoreType ~ ., data = stratified_join[, cols2], method = "knn", trControl = ctrl, 
+                preProcess = c("center","scale"), 
+                tuneGrid = expand.grid(k=3:20)) # try k=3,4, ... 20
+
+#Ergebnis von kNN fit
+knnfit
+plot(knnfit, main= "Genauigkeit bei verschiedenen K's")
+
+# predict the classes in the entire data set using the best model
+knnPredict <- predict(knnfit, newdata = stratified_join[, cols2] )
+
+# Konfusionsmatrix und Genauigkeit
+confusionMatrix(knnPredict, stratified_join$StoreType)
+# Visualisierung Farbe mit Originalklasse und Symbol mit vorhergesagter Klasse
+plot(stratified_join[,features], col=stratified_join$StoreType, pch=as.numeric(unclass(knnPredict)), main=" Visualisierung Farbe mit Originalklasse und Symbol mit vorhergesagter Klasse")
+```
+__Bemerkung:__ Als Vergleich zum oberen Beispiel wurden hier andere Predictors und Klassen gewählt.
+
+# 7. Support vector machine
+```{r}
+# svm trainieren
+library(e1071)
+svmfit <- svm(Assortment ~ ., data = train_sample_1000_train[,cols], kernel = "linear", 
+              cost = 1, scale = TRUE)
+
+# Ergebnis
+print(svmfit)
+
+#zusätzliche Infomationen
+summary(svmfit)
+
+# indices des support vectors
+svmfit$index
+
+# plot mit support vektoren (hyperplanes)
+plot(svmfit, train_sample_1000_train[,cols])
+
+# Vorhersage auf dem Testdatensatz
+prediction <- predict(svmfit, train_sample_1000_test, type = "class", na.action = na.pass)
+
+# Confusionsmatrix
+confusionMatrix(prediction, train_sample_1000_test[,"Assortment"])
+```
+__Ergebnis:__ Über die Anwendung des SVM-Verfahrens haben wir versucht eine lineare Trennung bzgl. der Klassen (hier "Assortment") vorzunehmen. Wie ersichtlich, bietet das SVM-Verfahren keine hohe Genauigkeit. Folglich wird im weiteren Verlauf nicht näher darauf eingegangen
+
+# 8. Clusteranalyse
+## 8.1 Hierarchical Clustering als distanzbasiertes Verfahren
+```{r}
+# Clustering nach Sortimentstufe bezogen auf Sales und Kundenanzahl
+# complete
+hc_complete <- hclust(dist(train_sample_1000[,4:5]), method="complete")
+plot(hc_complete, hang = -1, main = "complete linkage", labels=train_sample_1000$Assortment, cex=.9)
+# single
+hc_single <- hclust(dist(train_sample_1000[,4:5]), method="single")
+plot(hc_single, hang = -1, main = "single linkage", labels=train_sample_1000$Assortment, cex=.9)
+# centroid
+hc_cen <- hclust(dist(train_sample_1000[,4:5]), method="single")
+plot(hc_single, hang = -1, main = "single linkage", labels=train_sample_1000$Assortment, cex=.9)
+# average
+hc_average <- hclust(dist(train_sample_1000[,4:5]), method="average")
+dend_hc_average <- as.dendrogram(hc_average)
+plot(hc_average, hang = -1, main = "average linkage", labels=train_sample_1000$Assortment, cex=.9)
+
+dend <- dend_hc_average
+dend <- color_branches(dend, k = 4)
+dend <- color_labels(dend, k = 4)
+plot(dend, main = "farbig - average linkage")
+```
+__Ergebnis:__ Es wurde versucht die Varianz zwischen Clustern zu maximieren (Between-Clustervarianz). Hierbei kamen verschiedene Verfahren (complete, single und average linkage) für die Distanzberechnung zum Einsatz. Der letzte Plot visualisiert farblich 4 Cluster, die ähnliche Objekte gruppieren.
+
+## 8.2 K-means zur Varianzminimierung innerhalb der Cluster
+```{r}
+# run kmeans mit 4 zufällig gewählten Zentren
+kc <- kmeans(train_sample_1000[,4:5], 4, nstart = 1)
+table(train_sample_1000$Assortment, kc$cluster)
+
+# Farbig nach gefundenen clustern
+plot(train_sample_1000[c("Sales", "Customers")], pch = unclass(train_sample_1000$Assortment), 
+     col = kc$cluster,  main = "k-means clustering Assortment")
+points(kc$centers[,c("Sales", "Customers")], col = 1:4, pch = 8, cex=2)
+
+```
+__Ergebnis:__ Es wurde versucht Assortment zu clustern bezogen auf Sales und Customer. Unter der Annahme, dass ein Store anders kategorisiert wurde, als in der Realität, ist ein Sortimentwechsel evtl. lohnenswert. 
+
+## 8.3 Vergleich der Ergebnisse aus hierachical und k-means clustering
+```{r}
+hc_average_cut <- cutree(hc_average,4)
+table(hc_average_cut, kc$cluster)   
+```
+__Ergebnis:__ In der Tabelle werden die von den beiden Verfahren vorhergesagten Cluster (von Oben --> siehe 8.1, 8.2) gegenübergestellt. Hier sehen wir einerseits die Übereinstimmungen (445, 306, 188, 40) und die Misclassifications hier 3 an der Zahl -> (4,7,10), bei denen die Verfahren unterschiedliche Ergebnisse lieferten.
+
+
+# 9. Trees
+## 9.1 Regression Trees
+```{r}
+#set.seed(1)
+train = sample(1:nrow(joinedData), nrow(joinedData) * 0.8)
+reg_tree.joinedData=tree(Sales~.-Date ,joinedData,subset=train)
+summary(reg_tree.joinedData)
+plot(reg_tree.joinedData)
+text(reg_tree.joinedData,pretty=0)
+cv.joinedData=cv.tree(reg_tree.joinedData)
+plot(cv.joinedData, main = "Bestimmung Baumgröße")
+```
+__Ergebnis:__ Nach Training des Regressionsbaumes spielt Customeranzahl die größte Rolle. Die Auswahl der Einflussvariablen bestätigt die Nutzung dieser Variblen bei der linearen Regression. Aus dem Plot "Bestimmung Baumgröße" lässt sich ablesen, dass ungefähr bei 4 der Fehler nicht wesentlich besser wird.
+
+## 9.2 Decision Trees
+```{r}
+joinedData <- read.csv("traindata_joined_with_store_COMMA.csv")
+
+# Häufigkeit der Umsätze anschauen
+hist(joinedData$Sales)
+# Sales<=5000 EUR werden als KLEIN eingestufft (HighSales="No"), Sales>5000EUR als GROSS (HighSales="Yes")
+HighSales=ifelse(joinedData$Sales<=5000,"No","Yes")
+joinedData=data.frame(joinedData,HighSales)
+
+# Baum trainieren  
+## - Date, sonst Error: Error in tree(HighSales ~ . - Sales, joinedData) : factor predictors must have at most 32 levels
+tree.joinedData=tree(HighSales~.-Sales-Date,joinedData)
+summary(tree.joinedData)
+
+```
+__Bemerkung:__ Ziel ist Einstufung von Filialen in Groß und Klein in Abhängigkeit zu Sales.
+
+```{r}
+#Baum ausgeben
+plot(tree.joinedData); text(tree.joinedData,pretty=0)
+tree.joinedData
+
+```
+__Ergebnis:__ Nach dem Training des Klassifikationsbaumes, ist ersichtlich, dass die erste Aufteilung bezogen auf Customeranzahl stattfinden muss, gefolgt von Storetype und Promo...
+Die Distanz zur nächsten Aufzweigung spiegelt den SSE Wert wider.
+
+### a) Bestimmung der Baumgüte auf Testdaten
+```{r}
+#set.seed(102)
+
+# Teilen in Traindata + Testdata
+## Trainingsbaum auf Traindata erstellen  
+treetrain=sample(1:nrow(joinedData), nrow(joinedData)*0.8)# Traindata = 80%
+tree.joinedData=tree(HighSales~.-Sales-Date,joinedData,subset=treetrain)
+plot(tree.joinedData);
+#labeln der Zweige
+text(tree.joinedData,pretty=0)
+## Vorhersage machen und Graphik erstellen
+tree.pred=predict(tree.joinedData,joinedData[-treetrain,],type="class")
+with(joinedData[-treetrain,],table(tree.pred,HighSales))
+## Beispielkalkulation von Misclassification Error
+1-(93587+145732)/(93587+15765+12125+145732)
+
+#Bestimmung der Baumgüte auf Testdaten
+## 10-fache Kreuzvalidierung
+set.seed(3)
+cv.joinedData=cv.tree(tree.joinedData,FUN=prune.misclass)
+cv.joinedData
+plot(cv.joinedData, main=" Kreuzvalidierung Baumgröße") # __Ergebnis:__ 5 oder 6 scheinen ein guter Wahl zu sein für Tree size
+#Baumbeschneidung  - Größe 5
+prune.joinedData=prune.misclass(tree.joinedData,best=5)
+plot(prune.joinedData)
+text(prune.joinedData,pretty=0)
+# Bewertung der Baumbeschneidung auf Testdatenbasis
+tree.pred=predict(prune.joinedData,joinedData[-treetrain,],type="class")
+with(joinedData[-treetrain,],table(tree.pred,HighSales))
+## Beispielkalkulation von Misclassification Error
+1-(93587+145732)/(93587+15765+12125+145732)
+```
+__Ergebnis:__ Es ist erkenntlich, dass die Missklassifikationsrate bezogen auf Originalbaum und geprunten Baum gleich sind. Folglich ist der kleine Baum einfacher zu interpretieren, führt aber nicht zu größeren Fehlern. Für die Baumgröße scheint gemäß der Graphik "Kreuzvaliderung Baumgröße" der Wert 5 eine gute Wahl zu sein.
+
+
+## 9.3 Bagging und Random Forests
+```{r}
+###Ziel Random Forests ---> Mittlung vieler Bäume um Varianz zu reduzieren  
+#set.seed(1)
+joinedData <- read.csv("traindata_joined_with_store_COMMA.csv")
+joinedDataReduziert <- joinedData[, -c(3,19)]
+train=sample(1:nrow(joinedDataReduziert), 10000)
+#View(joinedDataReduziert)
+sales.test=joinedDataReduziert[-train,"Sales"]
+rf.sales=randomForest(Sales~.,data=joinedDataReduziert,subset=train,mtry=6,importance=TRUE,na.action=na.omit)
+yhat.rf = predict(rf.sales,newdata=joinedDataReduziert[-train,])
+#mean((yhat.rf-sales.test)^2)
+# Evaluieren der Modellqualität
+importance(rf.sales)
+varImpPlot(rf.sales)
+```
+__Ergebnis:__ Die erste Grafik zeigt, dass, wenn einer Variablen Werte durch zufällige Permutation zugewiesen wird, um wie viel sich der durchschnittliche Fehler (MSE) erhöhen wird. Das bedeutet, wählen wir zufällig eine Kundenanzahl aus, steigt der MSE automatisch um ca. 70 Prozent. 
+Auf der anderen Seite wird die Knotenreinheit durch den Gini-Index gemessen, welcher der Unterschied zwischen RSS vor und nach der Aufteilung auf dieser Variablen ist. Der GINI-index misst den durchschnittlichen Gewinn an Reinheit, durch Teilungen einer gegebenen Variablen. Wenn die Variable nützlich ist, tendiert sie dazu, gemischte markierte Knoten in reine einzelne Klassenknoten zu teilen. Wenn man eine nützliche Variable einstellt, ergibt sich eine relativ große Abnahme der mittleren Gini-Verstärkung. Das bedeutet eine sinnvolle Aufteilung ist nur nütztlich bezogen auf Customers, Open, DayOfWeek und Promo.
+
+
+## 9.4 Boosting
+```{r}
+### kleine Bäume erstellen, jeder Baum lernt aus den Fehlern des vorherigen
+#set.seed(14)
+boost.train=sample(1:nrow(joinedData), 10000)
+boost.joinedData=gbm(Sales~.-StoreCheck-Open-Date,data=joinedData[boost.train,],distribution="gaussian",
+                     n.trees=5000,interaction.depth=4,shrinkage=0.01)
+#Variable importance plot
+summary(boost.joinedData, main="Boosting - Variableneinfluss ") #Customer am höchsten
+
+#Partial dependance plots
+plot(boost.joinedData, i="Customers", main="Boosting Customers")
+plot(boost.joinedData, i="StoreType", main="Boosting Storetype")
+plot(boost.joinedData, i="Assortment", main="Boosting Assortment")
+plot(boost.joinedData, i="CompetitionDistance", main="Boosting CompetitionDistance")
+```
+__Ergebnis:__ Die Graphiken zeigen den Einfluss von den wichtigsten Eingabevariablen auf Sales (f(Customers...) = Sales. In der letzten Graphik sehen wir den Einfluss der Distanz zum nächsten Konkurenten auf die Vorhersage von Sales. Eine naher Konkurent hat im ersten Anschein eigentlich negativen Einfluss auf den Umsatz (Sales), aber dies könnte auch andererseits dahingehend gedeutet werden, dass viele Konkurenten in Ballungsgebieten eine Vielzahl von Konsumenten befriedigen können. 
+
+
+# 10. Hauptkomponentenanalyse
+```{r}
+# Skalieren der Daten für einen besseren Vergleich mit der PCA-Visualisierung
+zeitraum_2014_1_tag <- joinedData[joinedData$Date=="01.08.2014" , ]
+#Normalisierung der Spalten Customer und Sales
+joinedDataReduziert2 <- zeitraum_2014_1_tag[, c(4,5,10)]
+joinedDataReduziert3 <- zeitraum_2014_1_tag[, c(4,5)]
+zeitraum_2014_s <- as.data.frame(scale(joinedDataReduziert3))
+
+#View(zeitraum_2014_s)
+
+# Rossmann Daten Zeitraum 2014 mit Klassen-Informationen (farblich)
+plot(zeitraum_2014_s, col=joinedDataReduziert2$StoreType, main = "Umsatz-Kundenanzahl für den 01.08.2014 nach Storetype")
+#plot(zeitraum_2014_s)
+
+    # mit Label
+    sales_pca <- prcomp(joinedDataReduziert3, scale = TRUE)
+    sales_pca
+    g <- ggbiplot(sales_pca, scale = 0, 
+                  groups = joinedDataReduziert2$StoreType, ellipse = TRUE, 
+                  circle = TRUE, labels = zeitraum_2014_1_tag$Store)
+    g <- g + scale_color_discrete(name = '')
+    g <- g + theme(legend.direction = 'horizontal', 
+                   legend.position = 'top')+ ggtitle("Hauptkomponenten für 01.08.2014 nach Storetype mit Label")
+
+    print(g)
+
+    # ohne Label
+    sales_pca <- prcomp(joinedDataReduziert3, scale = TRUE)
+    sales_pca
+    g <- ggbiplot(sales_pca, scale = 0, 
+                  groups = joinedDataReduziert2$StoreType, ellipse = TRUE, 
+                  circle = TRUE)
+    g <- g + scale_color_discrete(name = '')
+    g <- g + theme(legend.direction = 'horizontal', 
+                   legend.position = 'top')+ ggtitle("Hauptkomponenten für 01.08.2014 nach Storetype ohne Label")
+
+    print(g)
+```
+__Ergebnis:__ Wir haben versucht die Einflussvariablen zu reduzieren. Es ist erkennbar, dass die Varianz in Richtung der Variablen Customers sehr gut erklärt werden kann, aber die Varianz in Richtung Sales kaum. Die erste Dimension PC1 beschreibt, dass am 01.08.2014 z.B Store '1114' sehr gut besucht ist im Vergleich zu '794'. Schaut man sich die PC2 an, so kann man am Store '261' erkennen, dass dieser als einer der Umsatzstärksten Stores eingestuft werden kann. Auffällig ist, dass Storetyp "d = Lila" sehr viel Umsatz generiert, bei wenig Kunden. Gegensätzlich fällt hier der Storetyp "b = Grün" auf, welcher viele Kunden hat, aber wenig Sales.
